@@ -14,20 +14,25 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H
-#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H
+#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H
+#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H
 
 #include <grpc/support/port_platform.h>
 
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
 #include <utility>
 
-#include "absl/container/inlined_vector.h"
-#include "absl/types/optional.h"
-
-#include <grpc/grpc_security.h>
-
-#include "src/core/lib/gprpp/ref_counted.h"
+#include "absl/base/thread_annotations.h"
+#include "absl/strings/string_view.h"
+#include "src/core/lib/iomgr/error.h"
 #include "src/core/lib/security/security_connector/ssl_utils.h"
+#include "src/core/util/ref_counted.h"
+#include "src/core/util/sync.h"
 
 struct grpc_tls_identity_pairs {
   grpc_core::PemKeyCertPairList pem_key_cert_pairs;
@@ -43,7 +48,7 @@ struct grpc_tls_certificate_distributor
     virtual ~TlsCertificatesWatcherInterface() = default;
 
     // Handles the delivery of the updated root and identity certificates.
-    // An absl::nullopt value indicates no corresponding contents for
+    // An std::nullopt value indicates no corresponding contents for
     // root_certs or key_cert_pairs. Note that we will send updates of the
     // latest contents for both root and identity certificates, even when only
     // one side of it got updated.
@@ -52,8 +57,8 @@ struct grpc_tls_certificate_distributor
     // @param key_cert_pairs the contents of the reloaded identity key-cert
     // pairs.
     virtual void OnCertificatesChanged(
-        absl::optional<absl::string_view> root_certs,
-        absl::optional<grpc_core::PemKeyCertPairList> key_cert_pairs) = 0;
+        std::optional<absl::string_view> root_certs,
+        std::optional<grpc_core::PemKeyCertPairList> key_cert_pairs) = 0;
 
     // Handles an error that occurs while attempting to fetch certificate data.
     // Note that if a watcher sees an error, it simply means the Provider is
@@ -79,8 +84,8 @@ struct grpc_tls_certificate_distributor
   // @param pem_root_certs The content of root certificates.
   // @param pem_key_cert_pairs The content of identity key-cert pairs.
   void SetKeyMaterials(
-      const std::string& cert_name, absl::optional<std::string> pem_root_certs,
-      absl::optional<grpc_core::PemKeyCertPairList> pem_key_cert_pairs);
+      const std::string& cert_name, std::optional<std::string> pem_root_certs,
+      std::optional<grpc_core::PemKeyCertPairList> pem_key_cert_pairs);
 
   bool HasRootCerts(const std::string& root_cert_name);
 
@@ -96,8 +101,8 @@ struct grpc_tls_certificate_distributor
   // @param identity_cert_error The error that the caller encounters when
   // reloading identity certs.
   void SetErrorForCert(const std::string& cert_name,
-                       absl::optional<grpc_error_handle> root_cert_error,
-                       absl::optional<grpc_error_handle> identity_cert_error);
+                       std::optional<grpc_error_handle> root_cert_error,
+                       std::optional<grpc_error_handle> identity_cert_error);
 
   // Propagates the error that the caller (e.g. Producer) encounters to all
   // watchers.
@@ -137,14 +142,14 @@ struct grpc_tls_certificate_distributor
   //
   // @param watcher The watcher being registered.
   // @param root_cert_name The name of the root certificates that will be
-  // watched. If set to absl::nullopt, the root certificates won't be watched.
+  // watched. If set to std::nullopt, the root certificates won't be watched.
   // @param identity_cert_name The name of the identity certificates that will
-  // be watched. If set to absl::nullopt, the identity certificates won't be
+  // be watched. If set to std::nullopt, the identity certificates won't be
   // watched.
   void WatchTlsCertificates(
       std::unique_ptr<TlsCertificatesWatcherInterface> watcher,
-      absl::optional<std::string> root_cert_name,
-      absl::optional<std::string> identity_cert_name);
+      std::optional<std::string> root_cert_name,
+      std::optional<std::string> identity_cert_name);
 
   // Cancels a watcher.
   //
@@ -155,8 +160,8 @@ struct grpc_tls_certificate_distributor
   // Contains the information about each watcher.
   struct WatcherInfo {
     std::unique_ptr<TlsCertificatesWatcherInterface> watcher;
-    absl::optional<std::string> root_cert_name;
-    absl::optional<std::string> identity_cert_name;
+    std::optional<std::string> root_cert_name;
+    std::optional<std::string> identity_cert_name;
   };
   // CertificateInfo contains the credential contents and some additional
   // watcher information.
@@ -170,9 +175,9 @@ struct grpc_tls_certificate_distributor
     // The contents of the identity key-certificate pairs.
     grpc_core::PemKeyCertPairList pem_key_cert_pairs;
     // The root cert reloading error propagated by the caller.
-    grpc_error_handle root_cert_error = GRPC_ERROR_NONE;
+    grpc_error_handle root_cert_error;
     // The identity cert reloading error propagated by the caller.
-    grpc_error_handle identity_cert_error = GRPC_ERROR_NONE;
+    grpc_error_handle identity_cert_error;
     // The set of watchers watching root certificates.
     // This is mainly used for quickly looking up the affected watchers while
     // performing a credential reloading.
@@ -182,16 +187,9 @@ struct grpc_tls_certificate_distributor
     // credential reloading.
     std::set<TlsCertificatesWatcherInterface*> identity_cert_watchers;
 
-    ~CertificateInfo() {
-      GRPC_ERROR_UNREF(root_cert_error);
-      GRPC_ERROR_UNREF(identity_cert_error);
-    }
-    void SetRootError(grpc_error_handle error) {
-      GRPC_ERROR_UNREF(root_cert_error);
-      root_cert_error = error;
-    }
+    ~CertificateInfo() {}
+    void SetRootError(grpc_error_handle error) { root_cert_error = error; }
     void SetIdentityError(grpc_error_handle error) {
-      GRPC_ERROR_UNREF(identity_cert_error);
       identity_cert_error = error;
     }
   };
@@ -214,4 +212,4 @@ struct grpc_tls_certificate_distributor
       ABSL_GUARDED_BY(mu_);
 };
 
-#endif  // GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H
+#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_DISTRIBUTOR_H

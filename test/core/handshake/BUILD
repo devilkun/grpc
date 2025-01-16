@@ -26,12 +26,16 @@ grpc_cc_test(
         "//src/core/tsi/test_creds:server1.key",
         "//src/core/tsi/test_creds:server1.pem",
     ],
+    external_deps = [
+        "absl/log:log",
+        "gtest",
+    ],
     language = "C++",
     tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:grpc_test_util",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
@@ -39,11 +43,15 @@ grpc_cc_library(
     name = "server_ssl_common",
     srcs = ["server_ssl_common.cc"],
     hdrs = ["server_ssl_common.h"],
+    external_deps = [
+        "absl/log:check",
+        "absl/log:log",
+    ],
     tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:grpc_test_util",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
@@ -55,13 +63,14 @@ grpc_cc_test(
         "//src/core/tsi/test_creds:server1.key",
         "//src/core/tsi/test_creds:server1.pem",
     ],
+    external_deps = ["gtest"],
     language = "C++",
     tags = ["no_windows"],
     deps = [
         ":server_ssl_common",
         "//:gpr",
         "//:grpc",
-        "//test/core/util:grpc_test_util",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
@@ -73,13 +82,16 @@ grpc_cc_test(
         "//src/core/tsi/test_creds:server1.key",
         "//src/core/tsi/test_creds:server1.pem",
     ],
+    external_deps = ["gtest"],
     language = "C++",
     tags = ["no_windows"],
     deps = [
         ":server_ssl_common",
         "//:gpr",
         "//:grpc",
-        "//test/core/util:grpc_test_util",
+        "//src/core:channel_args",
+        "//src/core:closure",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
@@ -92,11 +104,30 @@ grpc_cc_test(
 #        "//src/core/tsi/test_creds:server1.key",
 #        "//src/core/tsi/test_creds:server1.pem",
 #    ],
+#    external_deps = [
+#        "absl/log:check",
+#        "absl/log:log",
+#    ],
 #    language = "C++",
 #    tags = ["no_mac", no_windows"],
 #    deps = [
 #        "//:gpr",
 #        "//:grpc",
-#        "//test/core/util:grpc_test_util",
+#        "//test/core/test_util:grpc_test_util",
 #    ],
 #)
+
+grpc_cc_test(
+    name = "http_proxy_mapper_test",
+    srcs = ["http_proxy_mapper_test.cc"],
+    external_deps = ["gtest"],
+    language = "C++",
+    uses_polling = False,
+    deps = [
+        "//:gpr",
+        "//:grpc",
+        "//src/core:channel_args",
+        "//test/core/test_util:grpc_test_util",
+        "//test/core/test_util:scoped_env_var",
+    ],
+)

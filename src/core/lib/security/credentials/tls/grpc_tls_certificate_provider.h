@@ -14,26 +14,30 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H
-#define GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H
-
-#include <grpc/support/port_platform.h>
-
-#include <string.h>
-
-#include "absl/container/inlined_vector.h"
-#include "absl/status/statusor.h"
+#ifndef GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H
+#define GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H
 
 #include <grpc/grpc_security.h>
+#include <grpc/support/port_platform.h>
+#include <grpc/support/sync.h>
+#include <stdint.h>
 
-#include "src/core/lib/gpr/useful.h"
-#include "src/core/lib/gprpp/ref_counted.h"
-#include "src/core/lib/gprpp/ref_counted_ptr.h"
-#include "src/core/lib/gprpp/thd.h"
-#include "src/core/lib/iomgr/load_file.h"
-#include "src/core/lib/iomgr/pollset_set.h"
+#include <map>
+#include <optional>
+#include <string>
+
+#include "absl/base/thread_annotations.h"
+#include "absl/log/check.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "src/core/lib/security/credentials/tls/grpc_tls_certificate_distributor.h"
 #include "src/core/lib/security/security_connector/ssl_utils.h"
+#include "src/core/util/ref_counted.h"
+#include "src/core/util/ref_counted_ptr.h"
+#include "src/core/util/sync.h"
+#include "src/core/util/thd.h"
+#include "src/core/util/unique_type_name.h"
+#include "src/core/util/useful.h"
 
 // Interface for a grpc_tls_certificate_provider that handles the process to
 // fetch credentials and validation contexts. Implementations are free to rely
@@ -47,8 +51,6 @@
 struct grpc_tls_certificate_provider
     : public grpc_core::RefCounted<grpc_tls_certificate_provider> {
  public:
-  virtual grpc_pollset_set* interested_parties() const { return nullptr; }
-
   virtual grpc_core::RefCountedPtr<grpc_tls_certificate_distributor>
   distributor() const = 0;
 
@@ -61,11 +63,8 @@ struct grpc_tls_certificate_provider
   // be reused when two different `grpc_tls_certificate_provider` objects are
   // used but they compare as equal (assuming other channel args match).
   int Compare(const grpc_tls_certificate_provider* other) const {
-    GPR_ASSERT(other != nullptr);
-    // Intentionally uses grpc_core::QsortCompare instead of strcmp as a safety
-    // against different grpc_tls_certificate_provider types using the same
-    // name.
-    int r = grpc_core::QsortCompare(type(), other->type());
+    CHECK_NE(other, nullptr);
+    int r = type().Compare(other->type());
     if (r != 0) return r;
     return CompareImpl(other);
   }
@@ -74,7 +73,13 @@ struct grpc_tls_certificate_provider
   // implementation for down-casting purposes. Every provider implementation
   // should use a unique string instance, which should be returned by all
   // instances of that provider implementation.
-  virtual const char* type() const = 0;
+  virtual grpc_core::UniqueTypeName type() const = 0;
+
+  static absl::string_view ChannelArgName();
+  static int ChannelArgsCompare(const grpc_tls_certificate_provider* a,
+                                const grpc_tls_certificate_provider* b) {
+    return a->Compare(b);
+  }
 
  private:
   // Implementation for `Compare` method intended to be overridden by
@@ -99,7 +104,9 @@ class StaticDataCertificateProvider final
     return distributor_;
   }
 
-  const char* type() const override { return "StaticData"; }
+  UniqueTypeName type() const override;
+
+  absl::Status ValidateCredentials() const;
 
  private:
   struct WatcherInfo {
@@ -130,7 +137,7 @@ class FileWatcherCertificateProvider final
   FileWatcherCertificateProvider(std::string private_key_path,
                                  std::string identity_certificate_path,
                                  std::string root_cert_path,
-                                 unsigned int refresh_interval_sec);
+                                 int64_t refresh_interval_sec);
 
   ~FileWatcherCertificateProvider() override;
 
@@ -138,7 +145,11 @@ class FileWatcherCertificateProvider final
     return distributor_;
   }
 
-  const char* type() const override { return "FileWatcher"; }
+  UniqueTypeName type() const override;
+
+  absl::Status ValidateCredentials() const;
+
+  int64_t TestOnlyGetRefreshIntervalSecond() const;
 
  private:
   struct WatcherInfo {
@@ -155,11 +166,11 @@ class FileWatcherCertificateProvider final
   // Force an update from the file system regardless of the interval.
   void ForceUpdate();
   // Read the root certificates from files and update the distributor.
-  absl::optional<std::string> ReadRootCertificatesFromFile(
+  std::optional<std::string> ReadRootCertificatesFromFile(
       const std::string& root_cert_full_path);
   // Read the private key and the certificate chain from files and update the
   // distributor.
-  absl::optional<PemKeyCertPairList> ReadIdentityKeyCertPairFromFiles(
+  std::optional<PemKeyCertPairList> ReadIdentityKeyCertPairFromFiles(
       const std::string& private_key_path,
       const std::string& identity_certificate_path);
 
@@ -167,14 +178,14 @@ class FileWatcherCertificateProvider final
   std::string private_key_path_;
   std::string identity_certificate_path_;
   std::string root_cert_path_;
-  unsigned int refresh_interval_sec_ = 0;
+  int64_t refresh_interval_sec_ = 0;
 
   RefCountedPtr<grpc_tls_certificate_distributor> distributor_;
   Thread refresh_thread_;
   gpr_event shutdown_event_;
 
   // Guards members below.
-  Mutex mu_;
+  mutable Mutex mu_;
   // The most-recent credential data. It will be empty if the most recent read
   // attempt failed.
   std::string root_certificate_ ABSL_GUARDED_BY(mu_);
@@ -192,4 +203,4 @@ absl::StatusOr<bool> PrivateKeyAndCertificateMatch(
 
 }  // namespace grpc_core
 
-#endif  // GRPC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H
+#endif  // GRPC_SRC_CORE_LIB_SECURITY_CREDENTIALS_TLS_GRPC_TLS_CERTIFICATE_PROVIDER_H

@@ -26,20 +26,23 @@
 #import <grpc/grpc.h>
 #import <grpc/grpc_cronet.h>
 #import "test/core/end2end/cq_verifier.h"
-#import "test/core/util/port.h"
+#import "test/core/test_util/port.h"
 
 #import <grpc/support/alloc.h>
-#import <grpc/support/log.h>
 
 #import "src/core/lib/channel/channel_args.h"
-#import "src/core/lib/gpr/env.h"
-#import "src/core/lib/gpr/string.h"
-#import "src/core/lib/gpr/tmpfile.h"
-#import "src/core/lib/gprpp/host_port.h"
+#import "src/core/util/env.h"
+#import "src/core/util/host_port.h"
+#import "src/core/util/string.h"
+#import "src/core/util/tmpfile.h"
 #import "test/core/end2end/data/ssl_test_data.h"
-#import "test/core/util/test_config.h"
+#import "test/core/test_util/test_config.h"
 
+#if COCOAPODS
 #import <openssl_grpc/ssl.h>
+#else
+#import <openssl/ssl.h>
+#endif
 
 static void drain_cq(grpc_completion_queue *cq) {
   grpc_event ev;
@@ -136,7 +139,7 @@ unsigned int parse_h2_length(const char *field) {
   stream_engine *cronetEngine = [Cronet getGlobalEngine];
   grpc_channel *client = grpc_cronet_secure_channel_create(cronetEngine, addr.c_str(), NULL, NULL);
 
-  cq_verifier *cqv = cq_verifier_create(cq);
+  grpc_core::CqVerifier cqv(cq);
   grpc_op ops[6];
   grpc_op *op;
   grpc_metadata_array initial_metadata_recv;
@@ -150,7 +153,7 @@ unsigned int parse_h2_length(const char *field) {
 
   c = grpc_channel_create_call(client, NULL, GRPC_PROPAGATE_DEFAULTS, cq,
                                grpc_slice_from_static_string("/foo"), NULL, deadline, NULL);
-  GPR_ASSERT(c);
+  CHECK(c);
 
   grpc_metadata_array_init(&initial_metadata_recv);
   grpc_metadata_array_init(&trailing_metadata_recv);
@@ -158,7 +161,7 @@ unsigned int parse_h2_length(const char *field) {
   grpc_call_details_init(&call_details);
 
   int sl = socket(AF_INET, SOCK_STREAM, 0);
-  GPR_ASSERT(sl >= 0);
+  CHECK(sl >= 0);
 
   // Make an TCP endpoint to accept the connection
   struct sockaddr_in s_addr;
@@ -166,8 +169,8 @@ unsigned int parse_h2_length(const char *field) {
   s_addr.sin_family = AF_INET;
   s_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   s_addr.sin_port = htons(port);
-  GPR_ASSERT(0 == bind(sl, (struct sockaddr *)&s_addr, sizeof(s_addr)));
-  GPR_ASSERT(0 == listen(sl, 5));
+  CHECK(0 == bind(sl, (struct sockaddr *)&s_addr, sizeof(s_addr)));
+  CHECK(0 == listen(sl, 5));
 
   memset(ops, 0, sizeof(ops));
   op = ops;
@@ -204,11 +207,11 @@ unsigned int parse_h2_length(const char *field) {
   op->reserved = NULL;
   op++;
   error = grpc_call_start_batch(c, ops, (size_t)(op - ops), (void *)1, NULL);
-  GPR_ASSERT(GRPC_CALL_OK == error);
+  CHECK(GRPC_CALL_OK == error);
 
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     int s = accept(sl, NULL, NULL);
-    GPR_ASSERT(s >= 0);
+    CHECK(s >= 0);
 
     // Close the connection after 1 second to trigger Cronet's on_failed()
     sleep(1);
@@ -216,10 +219,10 @@ unsigned int parse_h2_length(const char *field) {
     close(sl);
   });
 
-  CQ_EXPECT_COMPLETION(cqv, (void *)1, 1);
-  cq_verify(cqv);
+  cqv.Expect((void *)1, true);
+  cqv.Verify();
 
-  GPR_ASSERT(status == GRPC_STATUS_UNAVAILABLE);
+  CHECK(status == GRPC_STATUS_UNAVAILABLE);
 
   grpc_slice_unref(details);
   grpc_metadata_array_destroy(&initial_metadata_recv);
@@ -228,8 +231,6 @@ unsigned int parse_h2_length(const char *field) {
   grpc_call_details_destroy(&call_details);
 
   grpc_call_unref(c);
-
-  cq_verifier_destroy(cqv);
 
   grpc_byte_buffer_destroy(request_payload);
   grpc_byte_buffer_destroy(response_payload_recv);
@@ -266,7 +267,7 @@ unsigned int parse_h2_length(const char *field) {
   stream_engine *cronetEngine = [Cronet getGlobalEngine];
   grpc_channel *client = grpc_cronet_secure_channel_create(cronetEngine, addr.c_str(), args, NULL);
 
-  cq_verifier *cqv = cq_verifier_create(cq);
+  grpc_core::CqVerifier cqv(cq);
   grpc_op ops[6];
   grpc_op *op;
   grpc_metadata_array initial_metadata_recv;
@@ -280,7 +281,7 @@ unsigned int parse_h2_length(const char *field) {
 
   c = grpc_channel_create_call(client, NULL, GRPC_PROPAGATE_DEFAULTS, cq,
                                grpc_slice_from_static_string("/foo"), NULL, deadline, NULL);
-  GPR_ASSERT(c);
+  CHECK(c);
 
   grpc_metadata_array_init(&initial_metadata_recv);
   grpc_metadata_array_init(&trailing_metadata_recv);
@@ -290,18 +291,18 @@ unsigned int parse_h2_length(const char *field) {
   __weak XCTestExpectation *expectation = [self expectationWithDescription:@"Coalescing"];
 
   int sl = socket(AF_INET, SOCK_STREAM, 0);
-  GPR_ASSERT(sl >= 0);
+  CHECK(sl >= 0);
   struct sockaddr_in s_addr;
   memset(&s_addr, 0, sizeof(s_addr));
   s_addr.sin_family = AF_INET;
   s_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   s_addr.sin_port = htons(port);
-  GPR_ASSERT(0 == bind(sl, (struct sockaddr *)&s_addr, sizeof(s_addr)));
-  GPR_ASSERT(0 == listen(sl, 5));
+  CHECK(0 == bind(sl, (struct sockaddr *)&s_addr, sizeof(s_addr)));
+  CHECK(0 == listen(sl, 5));
 
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     int s = accept(sl, NULL, NULL);
-    GPR_ASSERT(s >= 0);
+    CHECK(s >= 0);
     struct timeval tv;
     tv.tv_sec = 2;
     tv.tv_usec = 0;
@@ -320,7 +321,7 @@ unsigned int parse_h2_length(const char *field) {
     long len;
     BOOL coalesced = NO;
     while ((len = SSL_read(ssl, buf, sizeof(buf))) > 0) {
-      gpr_log(GPR_DEBUG, "Read len: %ld", len);
+      VLOG(2) << "Read len: " << len;
 
       // Analyze the HTTP/2 frames in the same TLS PDU to identify if
       // coalescing is successful
@@ -389,10 +390,10 @@ unsigned int parse_h2_length(const char *field) {
   op->reserved = NULL;
   op++;
   error = grpc_call_start_batch(c, ops, (size_t)(op - ops), (void *)1, NULL);
-  GPR_ASSERT(GRPC_CALL_OK == error);
+  CHECK(GRPC_CALL_OK == error);
 
-  CQ_EXPECT_COMPLETION(cqv, (void *)1, 1);
-  cq_verify(cqv);
+  cqv.Expect((void *)1, true);
+  cqv.Verify();
 
   grpc_slice_unref(details);
   grpc_metadata_array_destroy(&initial_metadata_recv);
@@ -401,8 +402,6 @@ unsigned int parse_h2_length(const char *field) {
   grpc_call_details_destroy(&call_details);
 
   grpc_call_unref(c);
-
-  cq_verifier_destroy(cqv);
 
   grpc_byte_buffer_destroy(request_payload);
   grpc_byte_buffer_destroy(response_payload_recv);

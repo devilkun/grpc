@@ -11,21 +11,43 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#include "src/core/lib/event_engine/default_event_engine_factory.h"
+
+#include <grpc/event_engine/event_engine.h>
 #include <grpc/support/port_platform.h>
 
 #include <memory>
 
-#include <grpc/event_engine/event_engine.h>
+#if defined(GPR_WINDOWS)
+#include "src/core/lib/event_engine/windows/windows_engine.h"
 
-#include "src/core/lib/event_engine/event_engine_factory.h"
-
-namespace grpc_event_engine {
-namespace experimental {
+namespace grpc_event_engine::experimental {
 
 std::unique_ptr<EventEngine> DefaultEventEngineFactory() {
-  // TODO(hork): call LibuvEventEngineFactory
-  return nullptr;
+  return std::make_unique<WindowsEventEngine>();
 }
 
-}  // namespace experimental
-}  // namespace grpc_event_engine
+}  // namespace grpc_event_engine::experimental
+#elif defined(GRPC_CFSTREAM)
+#include "src/core/lib/event_engine/cf_engine/cf_engine.h"
+
+namespace grpc_event_engine::experimental {
+
+std::unique_ptr<EventEngine> DefaultEventEngineFactory() {
+  return std::make_unique<CFEventEngine>();
+}
+
+}  // namespace grpc_event_engine::experimental
+#else
+#include "src/core/lib/event_engine/posix_engine/posix_engine.h"
+
+namespace grpc_event_engine::experimental {
+
+std::unique_ptr<EventEngine> DefaultEventEngineFactory() {
+  return std::make_unique<PosixEventEngine>();
+}
+
+}  // namespace grpc_event_engine::experimental
+
+#endif

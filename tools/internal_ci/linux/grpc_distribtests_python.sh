@@ -38,8 +38,6 @@ tools/run_tests/task_runner.py -f artifact linux python ${TASK_RUNNER_EXTRA_FILT
 rm -rf input_artifacts
 mkdir -p input_artifacts
 cp -r artifacts/* input_artifacts/ || true
-rm -rf artifacts_from_build_artifacts_step
-mv artifacts artifacts_from_build_artifacts_step || true
 
 # This step simply collects python artifacts from subdirectories of input_artifacts/ and copies them to artifacts/
 tools/run_tests/task_runner.py -f package linux python -x build_packages/sponge_log.xml || FAILED="true"
@@ -55,6 +53,9 @@ cp -r artifacts/* input_artifacts/ || true
 # We run the distribtests even if some of the artifacts have failed to build, since that gives
 # a better signal about which distribtest are affected by the currently broken artifact builds.
 tools/run_tests/task_runner.py -f distribtest linux python ${TASK_RUNNER_EXTRA_FILTERS} -j 12 -x distribtests/sponge_log.xml || FAILED="true"
+
+# This step checks if any of the artifacts exceeds a per-file size limit.
+tools/internal_ci/helper_scripts/check_python_artifacts_size.sh
 
 tools/internal_ci/helper_scripts/store_artifacts_from_moved_src_tree.sh
 

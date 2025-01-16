@@ -14,6 +14,7 @@
 """Generates and compiles Python gRPC stubs from proto_library rules."""
 
 load("@rules_proto//proto:defs.bzl", "ProtoInfo")
+load("@rules_python//python:py_info.bzl", "PyInfo")
 load(
     "//bazel:protobuf.bzl",
     "declare_out_files",
@@ -28,6 +29,7 @@ load(
 )
 
 _GENERATED_PROTO_FORMAT = "{}_pb2.py"
+_GENERATED_PROTO_STUB_FORMAT = "{}_pb2.pyi"
 _GENERATED_GRPC_PROTO_FORMAT = "{}_pb2_grpc.py"
 
 PyProtoInfo = provider(
@@ -48,7 +50,10 @@ def _gen_py_aspect_impl(target, context):
     # Early return for well-known protos.
     if is_well_known(str(context.label)):
         return [
-            PyProtoInfo(py_info = context.attr._protobuf_library[PyInfo]),
+            PyProtoInfo(
+                py_info = context.attr._protobuf_library[PyInfo],
+                generated_py_srcs = [],
+            ),
         ]
 
     protos = []
@@ -56,7 +61,8 @@ def _gen_py_aspect_impl(target, context):
         protos.append(get_staged_proto_file(target.label, context, p))
 
     includes = depset(direct = protos, transitive = [target[ProtoInfo].transitive_imports])
-    out_files = declare_out_files(protos, context, _GENERATED_PROTO_FORMAT)
+    out_files = (declare_out_files(protos, context, _GENERATED_PROTO_FORMAT) +
+                 declare_out_files(protos, context, _GENERATED_PROTO_STUB_FORMAT))
     generated_py_srcs = out_files
 
     tools = [context.executable._protoc]
@@ -65,6 +71,7 @@ def _gen_py_aspect_impl(target, context):
 
     arguments = ([
         "--python_out={}".format(out_dir.path),
+        "--pyi_out={}".format(out_dir.path),
     ] + [
         "--proto_path={}".format(get_include_directory(i))
         for i in includes.to_list()
@@ -104,10 +111,10 @@ _gen_py_aspect = aspect(
     fragments = ["py"],
     attrs = {
         "_protoc": attr.label(
-            default = Label("//external:protocol_compiler"),
+            default = Label("@com_google_protobuf//:protoc"),
             providers = ["files_to_run"],
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
         "_protobuf_library": attr.label(
             default = Label("@com_google_protobuf//:protobuf_python"),
@@ -134,7 +141,7 @@ def _generate_py_impl(context):
         for py_src in context.attr.deps[0][PyProtoInfo].generated_py_srcs:
             reimport_py_file = context.actions.declare_file(py_src.basename)
             py_sources.append(reimport_py_file)
-            import_line = "from %s import *" % py_src.short_path.replace("/", ".")[:-len(".py")]
+            import_line = "from %s import *" % py_src.short_path.replace("..", "external").replace("/", ".")[:-len(".py")]
             context.actions.write(reimport_py_file, import_line)
 
     # Collect output PyInfo provider.
@@ -160,10 +167,10 @@ py_proto_library = rule(
             aspects = [_gen_py_aspect],
         ),
         "_protoc": attr.label(
-            default = Label("//external:protocol_compiler"),
+            default = Label("@com_google_protobuf//:protoc"),
             providers = ["files_to_run"],
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
         "_protobuf_library": attr.label(
             default = Label("@com_google_protobuf//:protobuf_python"),
@@ -184,10 +191,15 @@ def _generate_pb2_grpc_src_impl(context):
     arguments = []
     tools = [context.executable._protoc, context.executable._grpc_plugin]
     out_dir = get_out_dir(protos, context)
+    if out_dir.import_path:
+        # is virtual imports
+        out_path = out_dir.path
+    else:
+        out_path = context.genfiles_dir.path
     arguments += get_plugin_args(
         context.executable._grpc_plugin,
         plugin_flags,
-        out_dir.path,
+        out_path,
         False,
     )
 
@@ -211,11 +223,11 @@ def _generate_pb2_grpc_src_impl(context):
     py_info = _merge_pyinfos(
         [
             p,
-            context.attr._grpc_library[PyInfo],
+            context.attr.grpc_library[PyInfo],
         ] + [dep[PyInfo] for dep in context.attr.py_deps],
     )
 
-    runfiles = context.runfiles(files = out_files, transitive_files = py_info.transitive_sources).merge(context.attr._grpc_library[DefaultInfo].data_runfiles)
+    runfiles = context.runfiles(files = out_files, transitive_files = py_info.transitive_sources).merge(context.attr.grpc_library[DefaultInfo].data_runfiles)
 
     return [
         DefaultInfo(
@@ -241,16 +253,16 @@ _generate_pb2_grpc_src = rule(
         "_grpc_plugin": attr.label(
             executable = True,
             providers = ["files_to_run"],
-            cfg = "host",
+            cfg = "exec",
             default = Label("//src/compiler:grpc_python_plugin"),
         ),
         "_protoc": attr.label(
             executable = True,
             providers = ["files_to_run"],
-            cfg = "host",
-            default = Label("//external:protocol_compiler"),
+            cfg = "exec",
+            default = Label("@com_google_protobuf//:protoc"),
         ),
-        "_grpc_library": attr.label(
+        "grpc_library": attr.label(
             default = Label("//src/python/grpcio/grpc:grpcio"),
             providers = [PyInfo],
         ),
@@ -263,6 +275,7 @@ def py_grpc_library(
         srcs,
         deps,
         strip_prefixes = [],
+        grpc_library = Label("//src/python/grpcio/grpc:grpcio"),
         **kwargs):
     """Generate python code for gRPC services defined in a protobuf.
 
@@ -276,6 +289,9 @@ def py_grpc_library(
         stripped from the beginning of foo_pb2 modules imported by the
         generated stubs. This is useful in combination with the `imports`
         attribute of the `py_library` rule.
+      grpc_library: (`label`) a single `py_library` target representing the
+        python gRPC library target to be depended upon. This can be used to
+        generate code that depends on `grpcio` from the Python Package Index.
       **kwargs: Additional arguments to be supplied to the invocation of
         py_library.
     """
@@ -290,5 +306,6 @@ def py_grpc_library(
         deps = srcs,
         py_deps = deps,
         strip_prefixes = strip_prefixes,
+        grpc_library = grpc_library,
         **kwargs
     )
