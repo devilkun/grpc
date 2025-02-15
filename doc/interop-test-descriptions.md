@@ -39,6 +39,18 @@ Clients should accept these arguments:
 * --service_config_json=SERVICE_CONFIG_JSON
     * Disables service config lookups and sets the provided string as the
       default service config.
+* --additional_metadata=ADDITIONAL_METADATA
+    * Additional metadata to send in each request, as a semicolon-separated list
+      of key:value pairs. The first key/value pair is separated by the first colon.
+      The second key/value pair is separated by the next colon *following* the
+      next semi-colon thereafter, and so on. For example:
+      - `abc-key:abc-value;foo-key:foo-value`
+          - Key/value pairs: `abc-key`/`abc-value`, `foo-key`/`foo-value`.
+      - `abc-key:abc:value;foo-key:foo:value`
+          - Key/value pairs: `abc-key`/`abc:value`, `foo-key`/`foo:value`.
+
+      Keys must be ASCII only (no `-bin` headers allowed). Values may contain
+      any character except semi-colons.
 
 Clients must support TLS with ALPN. Clients must not disable certificate
 checking.
@@ -990,30 +1002,24 @@ Procedure:
 Client asserts:
 * Call completed with status DEADLINE_EXCEEDED.
 
-### concurrent_large_unary
-
-Status: TODO
-
-Client performs 1000 large_unary tests in parallel on the same channel.
-
-### Flow control. Pushback at client for large messages (TODO: fix name)
-
-Status: TODO
-
-This test verifies that a client sending faster than a server can drain sees
-pushback (i.e., attempts to send succeed only after appropriate delays).
-
-#### rpc_soak
+### rpc_soak
 
 The client performs many large_unary RPCs in sequence over the same channel.
-The client records the latency and status of each RPC in some data structure.
-If the test ever consumes `soak_overall_timeout_seconds` seconds and still hasn't
-completed `soak_iterations` RPCs, then the test should discontinue sending RPCs
-as soon as possible. After performing all RPCs, the test should examine
-previously recorded RPC latency and status results in a second pass and fail if
-either:
+The total number of RPCs to execute is controlled by the `soak_iterations` 
+parameter, which defaults to 10. The number of threads used to execute RPCs 
+is controlled by `soak_num_threads`. By default, `soak_num_threads` is set to 1. 
 
-a) not all `soak_iterations` RPCs were completed
+The client records the latency and status of each RPC in 
+thread-specific data structure, which are later aggregated to form the overall 
+results. If the test ever consumes `soak_overall_timeout_seconds` seconds 
+and still hasn't completed `soak_iterations` RPCs, then the test should 
+discontinue sending RPCs as soon as possible. Each thread should independently 
+track its progress and stop once the overall timeout is reached.
+
+After performing all RPCs, the test should examine the previously aggregated RPC
+latency and status results from all threads in a second pass and fail if either:
+
+a) not all `soak_iterations` RPCs were completed across all threads
 
 b) the sum of RPCs that either completed with a non-OK status or exceeded
    `max_acceptable_per_rpc_latency_ms` exceeds `soak_max_failures`
@@ -1024,6 +1030,21 @@ instead wait for each RPC to complete. Doing so provides more data for
 debugging in case of failure. For example, if RPC deadlines are set to
 `soak_per_iteration_max_acceptable_latency_ms` and one of the RPCs hits that
 deadline, it's not clear if the RPC was late by a millisecond or a minute.
+
+In order to make it easy to analyze results, implementations should log the
+results of each iteration (i.e. RPC) in a format the matches the following
+regexes:
+
+- Upon success:
+  - `thread_id: \d+ soak iteration: \d+ elapsed_ms: \d+ peer: \S+ server_uri: 
+  \S+ succeeded`
+
+- Upon failure:
+  - `thread_id: \d+ soak iteration: \d+ elapsed_ms: \d+ peer: \S+ server_uri: 
+  \S+ failed`
+
+- Thread-specific logs will include the thread_id, helping to track performance
+  across threads.
 
 This test must be configurable via a few different command line flags:
 
@@ -1048,6 +1069,14 @@ This test must be configurable via a few different command line flags:
 * `soak_min_time_ms_between_rpcs`: The minimum time in milliseconds between
   consecutive RPCs. Useful for limiting QPS.
 
+* `soak_num_threads`: Specifies the number of threads to use for concurrently 
+  executing the soak test. Each thread performs `soak_iterations / soak_num_threads`
+  RPCs.
+
+This value defaults to 1 (i.e., no concurrency) but can be 
+  increased for concurrent execution. The total soak_iterations must be 
+  divisible by soak_num_threads.
+
 The following is optional but encouraged to improve debuggability:
 
 * Implementations should log the number of milliseconds that each RPC takes.
@@ -1055,7 +1084,7 @@ The following is optional but encouraged to improve debuggability:
   to log interesting latency percentiles at the end of the test (e.g. median,
   90th, and max latency percentiles).
 
-#### channel_soak
+### channel_soak
 
 Similar to rpc_soak, but this time each RPC is performed on a new channel. The
 channel is created just before each RPC and is destroyed just after.
@@ -1069,6 +1098,117 @@ included in that latency measurement (channel teardown semantics differ widely
 between languages). This latency measurement should also be the value that is
 logged and recorded in the latency histogram.
 
+### orca_per_rpc
+[orca_per_rpc]: #orca_per_rpc
+
+The client verifies that a custom LB policy, which is integrated with ORCA APIs, 
+will receive per-query metric reports from the backend. 
+
+The client will register the custom LB policy named 
+`test_backend_metrics_load_balancer`, which using ORCA APIs already installed a 
+per-query report listener. The interop-testing client will run with a service 
+config to select the load balancing config (using argument 
+`--service_config_json`), so that it effectively uses this newly registered 
+custom LB policy. A load report reference can be passed from the call to the LB 
+policy through, e.g. CallOptions, to receive metric reports. The LB policy will 
+fill in the reference with the latest load report from the report listener.
+This way, together with server behaviors we can verify the expected metric 
+reports are received.
+
+Server features:
+* [UnaryCall][]
+* [Backend Metrics Report][]
+
+Procedures:
+* The client sends a unary request: 
+    ```
+    {
+      orca_per_rpc_report:{
+        cpu_utilization: 0.8210
+        memory_utilization: 0.5847
+        request_cost: {
+          cost: 3456.32
+        }
+        utilization: {
+          util: 0.30499
+        }
+      }
+    }
+    ```
+
+The call carries a reference to receive the load report, e.g. using CallOptions.
+The reference is passed to the custom LB policy as part of the 
+`OrcaPerRequestReportListener` API.
+
+Client asserts:
+* The call is successful.
+* The per-query load report reference contains a metrics report that is 
+identical to the metrics data sent in the request shown above. 
+
+### orca_oob
+
+The client verifies that a custom LB policy, which is integrated with ORCA APIs, 
+will receive out-of-band metric reports from the backend.
+
+The client will register the custom LB policy named 
+`test_backend_metrics_load_balancer`. It has similar and additional functions as
+described in the [orca_per_rpc][] test. We use ORCA APIs to install an 
+out-of-band report listener (configure load report interval to be 1s) in the LB 
+policy. The interop-testing client will run with a service config to select the 
+load balancing config(using argument `--service_config_json`), so that it 
+effectively uses this newly registered custom LB policy. A load report reference
+can be passed from the call to the LB policy through, e.g. CallOptions, to 
+receive metric reports. The test framework will fill in the reference with the 
+latest load report from the report listener. This way, together with server 
+behaviors we can verify the expected metric reports are received.
+
+Server features:
+* [UnaryCall][]
+* [FullDuplexCall][]
+* [Backend Metrics Report][]
+
+Procedures:
+1. Client starts a full duplex call and sends: 
+    ```
+    {
+      orca_oob_report:{
+        cpu_utilization: 0.8210
+        memory_utilization: 0.5847
+        utilization: {
+          util: 0.30499
+        }
+      }
+      response_parameters:{
+        size: 1
+      }
+    }
+    ```
+2. After getting a response, client waits up to 10 seconds (or a total of 30s
+for the entire test case) to receive an OOB load report that matches the
+requested load report in step 1. To wait for load report, client may inject a
+callback to the custom LB policy, or poll the result by doing empty unary call
+that carries a reference, e.g. using CallOptions, that will be filled in by the
+custom LB policy as part of the `OrcaOobReportListener` API.
+3. Then client sends: 
+    ```
+    {
+      orca_oob_report:{
+        cpu_utilization: 0.29309
+        memory_utilization: 0.2
+        utilization: {
+          util: 0.2039
+        }
+      }
+      response_parameters:{
+        size: 1
+      }
+    }
+    ```
+4. After getting a response, client waits up to 10 seconds (or a total of 30s
+for the entire test case) to receive an OOB load report that matches the
+requested load report in step 3. Similar to step 2.
+5. Client half closes the stream, and asserts the streaming call is successful. 
+
 ### Experimental Tests
 
 These tests are not yet standardized, and are not yet implemented in all
@@ -1078,6 +1218,19 @@ languages. Therefore they are not part of our interop matrix.
 
 The client performs a number of large_unary RPCs over a single long-lived
 channel with a fixed but configurable interval between each RPC.
+
+#### concurrent_large_unary
+
+Status: TODO
+
+Client performs 1000 large_unary tests in parallel on the same channel.
+
+#### Flow control. Pushback at client for large messages (TODO: fix name)
+
+Status: TODO
+
+This test verifies that a client sending faster than a server can drain sees
+pushback (i.e., attempts to send succeed only after appropriate delays).
 
 ### TODO Tests
 
@@ -1152,6 +1305,12 @@ Servers should accept these arguments:
 * --use_tls=BOOLEAN
 
     * Whether to use a plaintext or encrypted connection
+
+Servers that want to be used for dual stack testing must accept this argument:
+
+* --address_type=IPV4|IPV6|IPV4_IPV6
+    
+    * What type of addresses to listen on. Default IPV4_IPV6
 
 Servers must support TLS with ALPN. They should use
 [server1.pem](https://github.com/grpc/grpc/blob/master/src/core/tsi/test_creds/server1.pem)
@@ -1281,3 +1440,24 @@ Discussion:
 Ideally, this would be communicated via metadata and not in the
 request/response, but we want to use this test in code paths that don't yet
 fully communicate metadata.
+
+### Backend metrics report
+[Backend Metrics Report]: #backend-metrics-report
+
+Server reports backend metrics data in both per-query and out-of-band cases, 
+echoing metrics data from the unary or fullDuplex call.
+
+Using ORCA APIs we install the per-query metrics reporting server interceptor, 
+so that it can attach metrics per RPC. We also register the `OpenRCAService` 
+implementation to the server, so that it can report metrics periodically. 
+The minimum report interval in the ORCA service is set to 1 sec.
+
+If `SimpleRequest.orca_per_rpc_report` is set in unary call, the server will add
+the metric data from `orca_per_rpc_report` to the RPC using the language's 
+CallMetricRecorder.
+
+If `SimpleRequest.orca_oob_report` is set in fullDuplexCall call, the server 
+will first clear all the previous metrics data, and then add utilization metrics
+from `orca_oob_report` to the `OpenRCAService`.
+The server implementation should use a lock or similar mechanism to allow only
+one client to control the server's out-of-band reports until the end of the RPC.

@@ -14,7 +14,10 @@
 
 #include "src/core/lib/promise/promise.h"
 
-#include <gtest/gtest.h>
+#include <memory>
+#include <utility>
+
+#include "gtest/gtest.h"
 
 namespace grpc_core {
 
@@ -32,7 +35,7 @@ TEST(PromiseTest, WithResult) {
 }
 
 TEST(PromiseTest, NowOrNever) {
-  EXPECT_EQ(NowOrNever(Immediate(42)), absl::optional<int>(42));
+  EXPECT_EQ(NowOrNever(Immediate(42)), std::optional<int>(42));
 }
 
 }  // namespace grpc_core

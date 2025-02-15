@@ -1,5 +1,6 @@
 # C/C++ build outputs
 .build/
+build/
 bins
 gens
 libs
@@ -16,13 +17,14 @@ cython_debug/
 dist/
 htmlcov/
 py3*/
-python_build/
+pyb/
 python_pylint_venv/
 src/python/grpcio_*/=*
 src/python/grpcio_*/build/
 src/python/grpcio_*/LICENSE
 src/python/grpcio_status/grpc_status/google/rpc/status.proto
-yapf_virtual_environment/
+black_virtual_environment/
+isort_virtual_environment/
 
 # Node installation output
 node_modules
@@ -53,6 +55,7 @@ coverage
 
 # vim temp files
 .*.swp
+.*.swo
 
 # Makefile's cache
 cache.mk
@@ -140,9 +143,6 @@ perf.data
 perf.data.old
 
 # bm_diff
-bm_diff_new/
-bm_diff_old/
-bm_*.json
 bloat_diff_new/
 bloat_diff_old/
 bloaty-build/
@@ -151,6 +151,7 @@ bloaty-build/
 **/cmake/build/
 
 # Visual Studio Code artifacts
+.cache/*
 .vscode/*
 .history/
 
@@ -174,3 +175,9 @@ iwyu_files0.txt
 iwyu/
 iwyu_build/
 
+# fuzzer logs
+fuzz-*.log
+
+# bazel module files
+third_party/**/MODULE.bazel
+MODULE.bazel.lock

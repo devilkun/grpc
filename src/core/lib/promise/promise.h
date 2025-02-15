@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef GRPC_CORE_LIB_PROMISE_PROMISE_H
-#define GRPC_CORE_LIB_PROMISE_PROMISE_H
+#ifndef GRPC_SRC_CORE_LIB_PROMISE_PROMISE_H
+#define GRPC_SRC_CORE_LIB_PROMISE_PROMISE_H
 
 #include <grpc/support/port_platform.h>
 
-#include <functional>
+#include <optional>
 #include <type_traits>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
-#include "absl/types/optional.h"
-#include "absl/types/variant.h"
-
 #include "src/core/lib/promise/detail/promise_like.h"
 #include "src/core/lib/promise/poll.h"
 
@@ -33,15 +31,15 @@ namespace grpc_core {
 // Most of the time we just pass around the functor, but occasionally
 // it pays to have a type erased variant, which we define here.
 template <typename T>
-using Promise = std::function<Poll<T>()>;
+using Promise = absl::AnyInvocable<Poll<T>()>;
 
 // Helper to execute a promise immediately and return either the result or
 // nothing.
 template <typename Promise>
 auto NowOrNever(Promise promise)
-    -> absl::optional<typename promise_detail::PromiseLike<Promise>::Result> {
+    -> std::optional<typename promise_detail::PromiseLike<Promise>::Result> {
   auto r = promise_detail::PromiseLike<Promise>(std::move(promise))();
-  if (auto* p = absl::get_if<kPollReadyIdx>(&r)) {
+  if (auto* p = r.value_if_ready()) {
     return std::move(*p);
   }
   return {};
@@ -58,9 +56,12 @@ namespace promise_detail {
 template <typename T>
 class Immediate {
  public:
-  explicit Immediate(T value) : value_(std::move(value)) {}
+  GPR_ATTRIBUTE_ALWAYS_INLINE_FUNCTION explicit Immediate(T value)
+      : value_(std::move(value)) {}
 
-  Poll<T> operator()() { return std::move(value_); }
+  GPR_ATTRIBUTE_ALWAYS_INLINE_FUNCTION Poll<T> operator()() {
+    return std::move(value_);
+  }
 
  private:
   T value_;
@@ -69,13 +70,16 @@ class Immediate {
 
 // Return \a value immediately
 template <typename T>
-promise_detail::Immediate<T> Immediate(T value) {
+GPR_ATTRIBUTE_ALWAYS_INLINE_FUNCTION inline promise_detail::Immediate<T>
+Immediate(T value) {
   return promise_detail::Immediate<T>(std::move(value));
 }
 
 // Return status Ok immediately
 struct ImmediateOkStatus {
-  Poll<absl::Status> operator()() { return absl::OkStatus(); }
+  GPR_ATTRIBUTE_ALWAYS_INLINE_FUNCTION Poll<absl::Status> operator()() {
+    return absl::OkStatus();
+  }
 };
 
 // Typecheck that a promise returns the expected return type.
@@ -84,12 +88,16 @@ struct ImmediateOkStatus {
 // should fail to compile. When modifying this code these should be uncommented
 // and their miscompilation verified.
 template <typename T, typename F>
-auto WithResult(F f) ->
+GPR_ATTRIBUTE_ALWAYS_INLINE_FUNCTION inline auto WithResult(F f) ->
     typename std::enable_if<std::is_same<decltype(f()), Poll<T>>::value,
                             F>::type {
   return f;
 }
 
+template <typename Promise>
+using PromiseResult = typename PollTraits<
+    typename promise_detail::PromiseLike<Promise>::Result>::Type;
+
 }  // namespace grpc_core
 
-#endif  // GRPC_CORE_LIB_PROMISE_PROMISE_H
+#endif  // GRPC_SRC_CORE_LIB_PROMISE_PROMISE_H
